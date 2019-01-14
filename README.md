@@ -24,7 +24,7 @@
 	*	进入项目目录，执行`ansible-playbook -i hosts just-go.yml`
 
 
-[u01]:	
+[u01]:	https://blog.csdn.net/KINGSUO2016/article/details/86478879
 [u02]:	https://github.com/KingSuo/auto-setup-k8s.git
 [u03]:	https://www.virtualbox.org/wiki/Downloads
 [u04]:	https://www.vagrantup.com/downloads.html
