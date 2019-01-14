@@ -1,0 +1,260 @@
+- hosts: docker-register # 指定目标操作主机为docker-register虚拟机
+  become: yes 
+  tasks:  # 在被操作主机上执行的任务
+
+    - name: 拷贝docker-ce-18.06
+      copy:
+        src:  path/to/your/docker-ce-18.06.1.ce-3.el7.x86_64.rpm
+        dest: $HOME
+        mode: 0744
+
+    - name: 安装docker-ce-18.06，通过清华镜像加速安装
+      yum:
+        name: /root/docker-ce-18.06.1.ce-3.el7.x86_64.rpm
+        state:  present
+
+    - name: 创建/etc/docker/daemon.json，并添加阿里云加速镜像
+      lineinfile:
+        path: /etc/docker/daemon.json
+        line: '{"registry-mirrors": ["https://5cj8vui1.mirror.aliyuncs.com"]}'
+        create: yes
+
+    - name: 重载daemon、开启docker、设置docker开机重启
+      systemd:
+        name: docker
+        daemon_reload: yes
+        state:  started
+        enabled:  yes
+
+    - name: 复制k8s-repo-1.13.0到虚拟机
+      copy:
+        src: path/to/your/k8s-repo-1.13.0
+        dest: $HOME
+        mode: 0744
+
+    - name: 载入docker镜像仓库k8s-repo-1.13.0
+      command:  docker load -i $HOME/k8s-repo-1.13.0
+
+    - name: 运行k8s-repo-1.13.0，并映射到虚拟机80端口
+      command:  docker run --restart=always -d -p 80:5000 --name repo harbor.io:1180/system/k8s-repo:v1.13.0
+
+- hosts: ['masters', 'workers']
+  become: yes
+  tasks:
+    - name: 关闭防火墙、禁止开机重启
+      systemd:
+        name: firewalld
+        state:  stopped
+        enabled:  no
+
+    - name: Disable selinux
+      command:  setenforce 0
+
+    - name: Disable SELinux on reboot
+      selinux:
+        state: disabled
+
+    - name: 加载br_netfilter模块
+      command:  modprobe br_netfilter
+
+    - name: 允许网桥转发数据包时被ip6tables的FORWARD规则过滤
+      sysctl:
+        name: net.bridge.bridge-nf-call-ip6tables
+        value: 1
+        state: present
+
+    - name: 允许网桥转发数据包时被iptables的FORWARD规则过滤
+      sysctl:
+        name: net.bridge.bridge-nf-call-iptables
+        value: 1
+        state: present
+
+    - name: 关闭swap
+      command:  swapoff -a
+
+    - name: 备份 /etc/fstab
+      command:  cp /etc/fstab /etc/fstab_bak
+
+    - name: 删除 swap
+      lineinfile: 
+        path: /etc/fstab
+        state:  absent
+        regexp: "swap" 
+
+    - name: 安装ntpdate
+      yum:
+        name: ntpdate
+        state:  present
+        update_cache: true
+
+    - name: 同步time
+      command: ntpdate -u ntp.api.bz
+
+    - name: 使用ELRepo源
+      command: rpm -Uvh https://www.elrepo.org/elrepo-release-7.0-3.el7.elrepo.noarch.rpm
+
+    - name: 升级内核
+      yum:
+        name: kernel-ml
+        state: present
+        enablerepo: elrepo-kernel
+
+    - name: 设置重启内核默认为第0个(0为4.20的内核)
+      command:  grub2-set-default 0
+
+    - name: 生成grub2配置文件
+      command:  grub2-mkconfig -o /boot/grub2/grub.cfg
+
+    - name: 重启
+      reboot:
+
+    - name: 复制ipvs.modules到/etc/sysconfig/modules/，并授予可执行权限
+      copy:
+        src:  path/to/your/ipvs.modules
+        dest: /etc/sysconfig/modules/ipvs.modules
+        mode: 0755
+
+    - name: 执行脚本以确保加载IPVS模块
+      shell:  "/bin/bash /etc/sysconfig/modules/ipvs.modules"
+
+    - name: 安装相关依赖
+      yum:
+        name: "{{ packages }}"
+      vars:
+        packages:
+        - yum-utils
+        - device-mapper-persistent-data
+        - lvm2
+        - socat
+        - ipvsadm
+        state:  present
+        update_cache: true
+
+    - name: 拷贝docker-ce-18.06
+      copy:
+        src:  path/to/your/docker-ce-18.06.1.ce-3.el7.x86_64.rpm
+        dest: $HOME
+        mode: 0744
+
+    - name: 安装docker-ce
+      yum:
+        name: /root/docker-ce-18.06.1.ce-3.el7.x86_64.rpm
+        state:  present
+
+    - name: 打开docker防火墙iptables规则
+      lineinfile:
+        path: /usr/lib/systemd/system/docker.service
+        insertbefore: '^ExecReload'
+        line: "ExecStartPost=/usr/sbin/iptables -P FORWARD ACCEPT"
+    
+    - name: 创建/etc/docker/daemon.json添加'insecure-registries'和'registry-mirrors'
+      lineinfile:
+        path: /etc/docker/daemon.json
+        line: '{"insecure-registries":["k8s.gcr.io", "gcr.io", "quay.io"],"registry-mirrors": ["https://5cj8vui1.mirror.aliyuncs.com"]}'
+        create: yes
+
+    - name: 配置k8s.gcr.io gcr.io quay.io(ip在墙外)的DNS解析到k8s-docker-register私有仓库上
+      lineinfile:
+        path: /etc/hosts
+        insertbefore: '^127.0.0.1'
+        line: "10.110.111.120   k8s.gcr.io gcr.io quay.io"
+
+    - name: 重载daemon、开启docker、设置docker开机重启
+      systemd:
+        name: docker
+        daemon_reload: yes
+        state:  started
+        enabled:  yes
+
+    - name: 复制、解压k8s
+      unarchive:
+        src:  path/to/your/k8s-v1.13.0-rpms.tgz
+        dest: /root
+
+    - name: 安装kubelet、kubeadm、kubectl(worker节点上不需要安装，以后可自行删除)
+      command:  rpm -Uvh /root/k8s-v1.13.0/* --force
+
+    - name: Enabled kubelet
+      systemd:
+        name: kubelet
+        enabled:  yes
+
+- hosts: masters
+  become: yes
+  tasks:
+    - name: 安装kubelet、kubectl、kubeadm
+      command:  rpm -Uvh /root/k8s-v1.13.0/* --force
+
+    - name: Enabled kubelet
+      systemd:
+        name: kubelet
+        enabled:  yes
+
+    - name: 拷贝kubeadm-config.yaml
+      copy: 
+        src:  path/to/your/kubeadm-config.yaml
+        dest: /etc/kubernetes/kubeadm-config.yaml
+        mode: 0666
+
+    - name: 初始化k8s
+      shell:  kubeadm init --config /etc/kubernetes/kubeadm-config.yaml >> cluster_initialized.txt
+      args:
+        chdir:  $HOME
+        creates:  cluster_initialized.txt
+
+    - name: 新建.kube目录
+      become: yes
+      file:
+        path: $HOME/.kube
+        state: directory
+        mode: 0755
+
+    - name: 拷贝 admin.conf到.kube/config
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: $HOME/.kube/config
+        remote_src: yes
+
+    - name: 创建RBAC部署
+      become: yes
+      shell:  kubectl apply -f https://docs.projectcalico.org/v3.3/getting-started/kubernetes/installation/hosted/rbac-kdd.yaml >> rbac_apply.txt
+      args:
+        chdir: $HOME
+        creates: rbac_apply.txt
+
+    - name: 安装Calico网络
+      become: yes
+      shell:  kubectl apply -f https://docs.projectcalico.org/v3.3/getting-started/kubernetes/installation/hosted/kubernetes-datastore/calico-networking/1.7/calico.yaml >> pod_network_setup.txt
+      args:
+        chdir: $HOME
+        creates: pod_network_setup.txt
+
+    - name: 生成worker节点加入master命令
+      shell:  kubeadm token create --print-join-command
+      register: join_command_raw
+
+    - name: 设置join_command命令变量
+      set_fact:
+        join_command: "{{ join_command_raw.stdout_lines[0] }}"
+
+- hosts:  workers
+  become: yes
+  tasks:
+    - name: 删除kubectl
+      file:
+        path: /root/k8s-v1.13.0/**kubectl**
+        state:  absent
+
+    - name: 安装kubelet、kubeadm
+      command:  rpm -Uvh /root/k8s-v1.13.0/* --force
+
+    - name: Enabled kubelet
+      systemd:
+        name: kubelet
+        enabled:  yes
+
+    - name: 加入master
+      shell: "{{ hostvars['master-01'].join_command }} >> node_joined.txt"
+      args:
+        chdir: $HOME
+        creates: node_joined.txt

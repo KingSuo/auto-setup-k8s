@@ -1,0 +1,9 @@
+[masters]
+master-01 ansible_host=10.110.111.111 ansible_user=root
+
+[workers]
+worker-01 ansible_host=10.110.111.112 ansible_user=root
+worker-02 ansible_host=10.110.111.113 ansible_user=root
+
+[docker-register]
+docker-register ansible_host=10.110.111.120 ansible_user=root
